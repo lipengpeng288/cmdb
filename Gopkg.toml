@@ -1,0 +1,62 @@
+required = [
+    "github.com/spf13/cobra",
+    "github.com/spf13/pflag",
+    "github.com/satori/go.uuid",
+    "gopkg.in/yaml.v2",
+    "go.uber.org/zap",
+    "github.com/coreos/etcd",
+    "github.com/olekukonko/tablewriter",
+    "github.com/360EntSecGroup-Skylar/excelize",
+    "github.com/graphql-go/graphql",
+    "github.com/pelletier/go-toml",
+    "github.com/gorilla/mux",
+    "github.com/robfig/cron"
+]
+
+[[constraint]]
+name = "github.com/spf13/cobra"
+version = "^0.0.3"
+
+[[constraint]]
+name = "github.com/spf13/pflag"
+version = "^1.0.1"
+
+[[constraint]]
+name = "github.com/satori/go.uuid"
+version = "^1.2.0"
+
+[[constraint]]
+name = "gopkg.in/yaml.v2"
+version = "^2.2.1"
+
+[[constraint]]
+name = "go.uber.org/zap"
+version = "^1.8.0"
+
+[[constraint]]
+name = "github.com/coreos/etcd"
+version = "^3.3.9"
+
+[[constraint]]
+name = "github.com/olekukonko/tablewriter"
+revision = "d4647c9c7a84d847478d890b816b7d8b62b0b279"
+
+[[constraint]]
+name = "github.com/360EntSecGroup-Skylar/excelize"
+version = "^1.3.0"
+
+[[constraint]]
+name = "github.com/graphql-go/graphql"
+revision = "2b97f4c8ac93a3519507f97612b112e1f402fff6"
+
+[[constraint]]
+name = "github.com/pelletier/go-toml"
+version = "^1.2.0"
+
+[[constraint]]
+name = "github.com/gorilla/mux"
+version = "^1.6.2"
+
+[[constraint]]
+name = "github.com/robfig/cron"
+version = "^1.1"
