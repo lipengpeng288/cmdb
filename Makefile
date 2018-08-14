@@ -1,4 +1,4 @@
-all: devel testsuite install clean
+all: ready testsuite install clean
 
 testsuite: test race benchmark
 
@@ -23,7 +23,7 @@ build: deps
 clean:
 	go clean -i github.com/universonic/cmdb/...
 
-devel:
+ready:
 	go version
 	go get -u github.com/golang/dep/cmd/dep
 

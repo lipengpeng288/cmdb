@@ -267,7 +267,7 @@ func (in *MachineSnapshot) Row() (row []string) {
 		in.SerialNumber,
 		in.Location.Datacenter,
 		in.Location.RoomName,
-		in.Location.Asile,
+		in.Location.Aisle,
 		in.Location.RackName,
 		in.Location.RackSlot,
 		in.Location.DeviceSize,
@@ -313,7 +313,7 @@ type MachineOverridableInfo struct {
 type MachineLocation struct {
 	Datacenter string `json:"datacenter,omitempty" protobuf:"bytes,1,opt,name=datacenter"`
 	RoomName   string `json:"room_name,omitempty" protobuf:"bytes,2,opt,name=room_name"`
-	Asile      string `json:"asile,omitempty" protobuf:"bytes,3,opt,name=asile"`
+	Aisle      string `json:"aisle,omitempty" protobuf:"bytes,3,opt,name=aisle"`
 	RackName   string `json:"rack_name,omitempty" protobuf:"bytes,4,opt,name=rack_name"`
 	RackSlot   string `json:"rack_slot,omitempty" protobuf:"bytes,5,opt,name=rack_slot"`
 	DeviceSize string `json:"device_size,omitempty" protobuf:"bytes,6,opt,name=device_size"`

@@ -16,8 +16,8 @@ package executor
 
 // Config is the configuration of executor
 type Config struct {
-	Timeout int
-	Workers int
+	Timeout int `json:"timeout,omitempty" yaml:"timeout,omitempty" toml:"timeout,omitempty"`
+	Workers int `json:"workers,omitempty" yaml:"workers,omitempty" toml:"workers,omitempty"`
 }
 
 // Complete fulfills the empty fields of Config

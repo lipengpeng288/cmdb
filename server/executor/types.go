@@ -297,6 +297,12 @@ type IPMISystemLocation struct {
 	RoomName   string `json:"room_name,omitempty"`
 }
 
+type IPMISystemOS struct {
+	Hostname  string `json:"hostname,omitempty"`
+	OSName    string `json:"os_name,omitempty"`
+	OSVersion string `json:"os_version,omitempty"`
+}
+
 type AnsibleFacts struct {
 	AllIPv4Addresses           []string                            `json:"ansible_all_ipv4_addresses,omitempty"`
 	AllIPv6Addresses           []string                            `json:"ansible_all_ipv6_addresses,omitempty"`
@@ -390,6 +396,7 @@ type AnsibleFacts struct {
 	IPMISerialNumber    string              `json:"ipmi_serial_num,omitempty"`
 	IPMISystemLocation  *IPMISystemLocation `json:"ipmi_system_location,omitempty"`
 	IPMIVirtualDisks    []*IPMIVirtualDisk  `json:"ipmi_virtual_disks,omitempty"`
+	IPMISystemOS        *IPMISystemOS       `json:"ipmi_system_os,omitempty"`
 	// Those are duplicated from hostvars
 	InventoryHostname string `json:"ansible_inventory_hostname,omitempty"`
 	Department        string `json:"ansible_department,omitempty"`

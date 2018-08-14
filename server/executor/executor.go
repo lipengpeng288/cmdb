@@ -22,6 +22,8 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
+	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -95,6 +97,11 @@ func (in *Executor) Stop() {
 func (in *Executor) collect(digest *genericStorage.MachineDigest) (err error) {
 	defer in.logger.Sync()
 	defer func() {
+		if r := recover(); r != nil {
+			in.logger.Errorf("An critical error has just occurred: %v", r)
+		}
+	}()
+	defer func() {
 		if err != nil {
 			digest.State = "FAILED"
 			in.logger.Errorf("Failed to generate digest due to: %v", err)
@@ -115,7 +122,6 @@ func (in *Executor) collect(digest *genericStorage.MachineDigest) (err error) {
 	go func() {
 		var err error
 		defer in.logger.Sync()
-		defer close(errChan)
 		defer func() {
 			if r := recover(); r != nil {
 				errChan <- r.(error)
@@ -279,6 +285,7 @@ func (in *Executor) collect(digest *genericStorage.MachineDigest) (err error) {
 				errChan <- err
 				return
 			}
+			defer in.tryToSync(machine, result[name])
 			dataset = append(dataset, *ParseAnsibleResult(each, machine))
 		}
 	}()
@@ -318,6 +325,84 @@ func (in *Executor) saveToDigest(snapshots []genericStorage.MachineSnapshot, dig
 	return in.storage.Update(digest)
 }
 
+func (in *Executor) tryToSync(machine *genericStorage.Machine, result *AnsibleResultCarrier) error {
+	defer in.logger.Sync()
+	if result.AnsibleFacts == nil {
+		in.logger.Infof("Skipped to synchronise machine '%s' due to a failed execution", machine.GetName())
+		return nil
+	}
+	var errs []error
+	switch result.AnsibleFacts.IPMIManufacturer {
+	case "DELL":
+		modRacAdm := func(k, v string) error {
+			cmd := exec.Command("racadm", "-r", machine.IPMIPassword, "-u", machine.IPMIUser, "-p", machine.IPMIPassword, "set", k, v)
+			return cmd.Run()
+		}
+		if machine.ExtraInfo.Location.Datacenter != "" {
+			err := modRacAdm("System.Location.DataCenter", machine.ExtraInfo.Location.Datacenter)
+			if err != nil {
+				errs = append(errs, err)
+			}
+		}
+		if machine.ExtraInfo.Location.RoomName != "" {
+			err := modRacAdm("System.Location.RoomName", machine.ExtraInfo.Location.RoomName)
+			if err != nil {
+				errs = append(errs, err)
+			}
+		}
+		if machine.ExtraInfo.Location.Aisle != "" {
+			err := modRacAdm("System.Location.Aisle", machine.ExtraInfo.Location.Aisle)
+			if err != nil {
+				errs = append(errs, err)
+			}
+		}
+		if machine.ExtraInfo.Location.RackName != "" {
+			err := modRacAdm("System.Location.Rack.Name", machine.ExtraInfo.Location.RackName)
+			if err != nil {
+				errs = append(errs, err)
+			}
+		}
+		if machine.ExtraInfo.Location.RackSlot != "" {
+			err := modRacAdm("System.Location.Rack.Slot", machine.ExtraInfo.Location.RackSlot)
+			if err != nil {
+				errs = append(errs, err)
+			}
+		}
+		if result.Hostname != "" {
+			err := modRacAdm("System.ServerOS.Hostname", result.Hostname)
+			if err != nil {
+				errs = append(errs, err)
+			}
+		}
+		if result.Distribution != "" {
+			var os string
+			if result.Distribution == "OpenBSD" {
+				os = fmt.Sprintf("%s %s", result.Distribution, result.DistributionRelease)
+			} else {
+				os = fmt.Sprintf("%s %s", result.Distribution, result.DistributionVersion)
+			}
+			err := modRacAdm("System.ServerOS.OSName", os)
+			if err != nil {
+				errs = append(errs, err)
+			}
+		}
+	default:
+		in.logger.Infof("Ignored to synchronise machine '%s' due to unsynchronizable manufacturer: %s", machine.GetName(), result.AnsibleFacts.IPMIManufacturer)
+	}
+	switch len(errs) {
+	case 0:
+	case 1:
+		in.logger.Errorf("Error occurred while synchronizing machine %s's profile: %v", machine.GetName(), errs[0])
+	default:
+		var errStrs []string
+		for i := range errs {
+			errStrs = append(errStrs, errs[i].Error())
+		}
+		in.logger.Errorf("More than one error occurred while synchronizing machine %s's profile: \n%s", machine.GetName(), strings.Join(errStrs, "\n"))
+	}
+	return nil
+}
+
 // NewExecutor returns a new executor with given storage and logger.
 func NewExecutor(timeout int) *Executor {
 	return &Executor{
@@ -331,10 +416,12 @@ func NewExecutor(timeout int) *Executor {
 func ParseAnsibleResult(cv *AnsibleResultCarrier, override *genericStorage.Machine) (result *genericStorage.MachineSnapshot) {
 	result = genericStorage.NewMachineSnapshot()
 	result.Namespace = override.GetName()
-	if cv.Distribution == "OpenBSD" {
-		result.OS = fmt.Sprintf("%s %s", cv.Distribution, cv.DistributionRelease)
-	} else {
-		result.OS = fmt.Sprintf("%s %s", cv.Distribution, cv.DistributionVersion)
+	if cv.Distribution != "" {
+		if cv.Distribution == "OpenBSD" {
+			result.OS = fmt.Sprintf("%s %s", cv.Distribution, cv.DistributionRelease)
+		} else {
+			result.OS = fmt.Sprintf("%s %s", cv.Distribution, cv.DistributionVersion)
+		}
 	}
 	result.Department = cv.Department
 	switch cv.VirtualizationRole {
@@ -352,7 +439,7 @@ func ParseAnsibleResult(cv *AnsibleResultCarrier, override *genericStorage.Machi
 	if cv.IPMISystemLocation != nil {
 		result.Location.Datacenter = cv.IPMISystemLocation.Datacenter
 		result.Location.RoomName = cv.IPMISystemLocation.RoomName
-		result.Location.Asile = cv.IPMISystemLocation.Aisle
+		result.Location.Aisle = cv.IPMISystemLocation.Aisle
 		result.Location.RackName = cv.IPMISystemLocation.RackName
 		result.Location.RackSlot = cv.IPMISystemLocation.RackSlot
 		result.Location.DeviceSize = cv.IPMISystemLocation.DeviceSize
@@ -448,8 +535,8 @@ func ParseAnsibleResult(cv *AnsibleResultCarrier, override *genericStorage.Machi
 	if override.ExtraInfo.Location.RoomName != "" {
 		result.Location.RoomName = override.ExtraInfo.Location.RoomName
 	}
-	if override.ExtraInfo.Location.Asile != "" {
-		result.Location.Asile = override.ExtraInfo.Location.Asile
+	if override.ExtraInfo.Location.Aisle != "" {
+		result.Location.Aisle = override.ExtraInfo.Location.Aisle
 	}
 	if override.ExtraInfo.Location.RackName != "" {
 		result.Location.RackName = override.ExtraInfo.Location.RackName

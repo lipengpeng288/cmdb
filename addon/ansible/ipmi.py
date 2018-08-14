@@ -237,14 +237,17 @@ class DellAdapter(IPMIInterface):
 
     def gather_info(self):
         tasks = []
+        getSystemOS = ParallelTaskLauncher(self._get_system_os)
         getSystemLoc = ParallelTaskLauncher(self._get_system_location)
         getMemSettings = ParallelTaskLauncher(self._get_mem_settings)
         getHWInventory = ParallelTaskLauncher(self._get_hardware_inventory)
 
+        tasks.append(getSystemOS)
         tasks.append(getSystemLoc)
         tasks.append(getMemSettings)
         tasks.append(getHWInventory)
 
+        getSystemOS.start()
         getSystemLoc.start()
         getMemSettings.start()
         getHWInventory.start()
@@ -252,6 +255,12 @@ class DellAdapter(IPMIInterface):
         for t in tasks:
             t.join()
 
+        os = getSystemOS.get_result()
+        osinfo = dict()
+        self._result['ipmi_system_os'] = osinfo
+        osinfo['hostname'] = self._fetch_from("HostName", os)
+        osinfo['os_name'] = self._fetch_from("OSName", os)
+        osinfo['os_version'] = self._fetch_from("OSVersion", os)
         loc = getSystemLoc.get_result()
         location = dict()
         self._result['ipmi_system_location'] = location
@@ -339,6 +348,9 @@ class DellAdapter(IPMIInterface):
                 except KeyError:
                     continue
         return self._result
+
+    def _get_system_os(self):
+        return self.__get_racadm_kv(namespace="System.ServerOS")
 
     def _get_system_location(self):
         return self.__get_racadm_kv(namespace="System.Location")
