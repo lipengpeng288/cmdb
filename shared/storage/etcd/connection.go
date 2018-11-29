@@ -1,4 +1,4 @@
-// Copyright © 2018 Alfred Chou <unioverlord@gmail.com>
+// Copyright 2018 Alfred Chou <unioverlord@gmail.com>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -62,15 +62,42 @@ func (in *conn) Get(cv generic.Object) (err error) {
 	return in.getKey(ctx, in.keyOf(cv), cv)
 }
 
-func (in *conn) Watch(kind string) (w generic.Watcher, err error) {
-	switch kind {
-	case generic.RESOURCE_MACHINE:
-	case generic.RESOURCE_MACHINE_DIGEST:
-	case generic.RESOURCE_MACHINE_SNAPSHOT:
-	default:
-		return nil, fmt.Errorf("No such kind of resource: %s", kind)
+func (in *conn) Watch(cv generic.Object, opt generic.WatchOption) (w generic.Watcher, err error) {
+	var kp string
+	switch opt {
+	case generic.WatchOnKind:
+		kp = strings.TrimSuffix(in.prefix+filepath.Join("/", cv.GetKind()), "/") + "/"
+		return newWatcherFrom(clientv3.NewWatcher(in.db), kp, in.logger.Named("OBSERVER").With(
+			"prefix", true,
+			"key", kp,
+		), clientv3.WithPrefix(), clientv3.WithPrevKV(), clientv3.WithProgressNotify()), nil
+	case generic.WatchOnNamespace:
+		var ns string
+		if cv.HasNamespace() {
+			ns = cv.GetNamespace()
+		}
+		kp = strings.TrimSuffix(in.prefix+filepath.Join("/", cv.GetKind(), ns), "/") + "/"
+		return newWatcherFrom(clientv3.NewWatcher(in.db), kp, in.logger.Named("OBSERVER").With(
+			"prefix", true,
+			"key", kp,
+		), clientv3.WithPrefix(), clientv3.WithPrevKV(), clientv3.WithProgressNotify()), nil
+	case generic.WatchOnName:
+		var ns string
+		if cv.HasNamespace() {
+			if ns = cv.GetNamespace(); ns == "" {
+				return nil, fmt.Errorf("Namespace is required while watching on a namespace-sensitive object")
+			}
+		}
+		if cv.GetName() == "" {
+			return nil, fmt.Errorf("Name must be specified while watching on a specific target")
+		}
+		kp = in.prefix + filepath.Join("/", cv.GetKind(), ns, cv.GetName())
+		return newWatcherFrom(clientv3.NewWatcher(in.db), kp, in.logger.Named("OBSERVER").With(
+			"prefix", false,
+			"key", kp,
+		), clientv3.WithPrevKV(), clientv3.WithProgressNotify()), nil
 	}
-	return newWatcherFrom(in.db.Watcher, strings.TrimSuffix(in.prefix+filepath.Join("/", kind), "/")+"/", clientv3.WithPrefix()), nil
+	return nil, fmt.Errorf("Invalid watch option")
 }
 
 func (in *conn) List(cv generic.ObjectList, ns ...string) (err error) {
@@ -104,15 +131,25 @@ func (in *conn) Update(obj generic.Object) error {
 		old := new(struct {
 			generic.ObjectMeta `json:"metadata,omitempty"`
 		})
-		err := json.Unmarshal(currentValue, old)
-		if err != nil {
-			return nil, err
+		if len(currentValue) != 0 {
+			err := json.Unmarshal(currentValue, old)
+			if err != nil {
+				return nil, err
+			}
+			// Permanently preserve an object's history metadata.
+			obj.SetGUID(old.GetGUID())
+			obj.SetKind(old.GetKind())
+			obj.SetNamespace(old.GetNamespace())
+			obj.SetName(old.GetName())
 		}
-		obj.SetGUID(old.GetGUID())
-		obj.SetKind(old.GetKind())
-		obj.SetName(old.GetName())
-		obj.SetCreationTimestamp(old.GetCreationTimestamp())
-		obj.SetUpdatingTimestamp(time.Now())
+		now := time.Now()
+		// If it is not present, then we consider it as a newly created object.
+		if old.GetCreationTimestamp().IsZero() {
+			obj.SetCreationTimestamp(now)
+		} else {
+			obj.SetCreationTimestamp(old.GetCreationTimestamp())
+		}
+		obj.SetUpdatingTimestamp(now)
 		return json.Marshal(obj)
 	})
 }

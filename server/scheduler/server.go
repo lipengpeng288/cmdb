@@ -27,12 +27,14 @@ import (
 // which depends the kind of resource if changes are detected. It is indeed a bundle of
 // multiple watchers and callback functions.
 type Server struct {
-	closeCh  chan struct{}
-	clzSubCh []chan struct{}
-	sche     cron.Schedule
-	observer genericStorage.Watcher
-	storage  genericStorage.Storage
-	Handler  *Handler
+	closeCh          chan struct{}
+	clzSubCh         []chan struct{}
+	sche             cron.Schedule
+	machineObserver  genericStorage.Watcher
+	digestObserver   genericStorage.Watcher
+	autoDiscObserver genericStorage.Watcher
+	storage          genericStorage.Storage
+	Handler          *Handler
 }
 
 // Prepare initialize inner storage and logger for server
@@ -56,11 +58,21 @@ func (in *Server) Serve() (err error) {
 		}
 		in.clzSubCh = in.clzSubCh[:0]
 	}()
-	in.observer, err = in.storage.Watch(genericStorage.RESOURCE_MACHINE_DIGEST)
+	in.machineObserver, err = in.storage.Watch(genericStorage.NewMachine(), genericStorage.WatchOnKind)
 	if err != nil {
 		return
 	}
-	eventChan := in.observer.Output()
+	in.digestObserver, err = in.storage.Watch(genericStorage.NewMachineDigest(), genericStorage.WatchOnKind)
+	if err != nil {
+		return
+	}
+	in.autoDiscObserver, err = in.storage.Watch(genericStorage.NewDiscoveredMachines(), genericStorage.WatchOnName)
+	if err != nil {
+		return
+	}
+	machineEventChan := in.machineObserver.Output()
+	digestEventChan := in.digestObserver.Output()
+	autoDiscEventChan := in.autoDiscObserver.Output()
 	var (
 		revalidate bool
 		timer      *time.Timer
@@ -76,12 +88,24 @@ LOOP:
 		select {
 		case <-in.closeCh:
 			break LOOP
-		case event := <-eventChan:
+		case event := <-machineEventChan:
+			switch event.Type {
+			case genericStorage.DELETE:
+				// go in.Handler.gcMachineOnEvent(event)
+			case genericStorage.ERROR:
+				break LOOP
+			}
+		case event := <-digestEventChan:
 			switch event.Type {
 			case genericStorage.CREATE:
 				go in.Handler.refreshMachineSnapshotOnEvent(event)
 			case genericStorage.ERROR:
 				break LOOP
+			}
+		case event := <-autoDiscEventChan:
+			switch event.Type {
+			case genericStorage.CREATE, genericStorage.UPDATE:
+				go in.Handler.refreshDicoveredMachinesOnEvent(event)
 			}
 		case <-timer.C:
 			if sche := in.sche.Next(time.Now()); sche.IsZero() {
@@ -93,12 +117,14 @@ LOOP:
 			}
 			if !revalidate {
 				go in.Handler.createMachineDigestOnTime()
+				go in.Handler.autoDiscoveryOnTime()
 			}
 		}
 	}
 
 	timer.Stop()
-	in.observer.Close()
+	in.machineObserver.Close()
+	in.digestObserver.Close()
 	return nil
 }
 

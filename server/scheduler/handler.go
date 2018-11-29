@@ -37,17 +37,36 @@ func (in *Handler) RegisterExecutor(exec *executor.Executor) {
 
 func (in *Handler) createMachineDigestOnTime() {
 	defer in.logger.Sync()
+
+	in.logger.Info("Creating a new digest on schedule")
 	digest := genericStorage.NewMachineDigest()
 	err := in.storage.Create(digest)
 	if err != nil {
-		in.logger.Error("Could not create new machine digest due to: %v", err)
+		in.logger.Errorf("Could not create new machine digest due to: %v", err)
+	}
+}
+
+func (in *Handler) autoDiscoveryOnTime() {
+	defer in.logger.Sync()
+
+	in.logger.Info("Auto-discovering new machines on preset zones...")
+	latest := genericStorage.NewDiscoveredMachines()
+	latest.State = genericStorage.StartedState
+	err := in.storage.Update(latest)
+RETRY:
+	if err != nil {
+		if !genericStorage.IsInternalError(err) {
+			err = in.storage.Create(latest)
+			goto RETRY
+		}
+		in.logger.Errorf("Could not mark auto-discovery as `STARTED` state: %v", err)
 	}
 }
 
 func (in *Handler) refreshMachineSnapshotOnEvent(event genericStorage.WatchEvent) {
 	defer in.logger.Sync()
 
-	in.logger.Info("Notifying executor to refresh machine information on time")
+	in.logger.Info("Notifying executor to refresh machine information")
 	digest := genericStorage.NewMachineDigest()
 	err := event.Unmarshal(digest)
 	if err != nil {
@@ -56,6 +75,20 @@ func (in *Handler) refreshMachineSnapshotOnEvent(event genericStorage.WatchEvent
 	}
 	rand.Seed(time.Now().Unix())
 	in.executor[rand.Intn(len(in.executor))].NotifyDigest(digest)
+}
+
+func (in *Handler) refreshDicoveredMachinesOnEvent(event genericStorage.WatchEvent) {
+	defer in.logger.Sync()
+
+	in.logger.Info("Notifying executor to refresh machine information")
+	latest := genericStorage.NewDiscoveredMachines()
+	err := event.Unmarshal(latest)
+	if err != nil {
+		in.logger.Error(err)
+		return
+	}
+	rand.Seed(time.Now().Unix())
+	in.executor[rand.Intn(len(in.executor))].NotifyDiscoveredMachines(latest)
 }
 
 // NewHandler return a new Handler instance.

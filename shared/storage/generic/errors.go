@@ -1,4 +1,4 @@
-// Copyright © 2018 Alfred Chou <unioverlord@gmail.com>
+// Copyright 2018 Alfred Chou <unioverlord@gmail.com>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,30 +14,29 @@
 
 package generic
 
-type internalError struct {
+type overlayError struct {
 	s string
 }
 
-func (e internalError) Error() string {
+func (e overlayError) Error() string {
 	return e.s
 }
 
-func newInternalError(s string) *internalError {
-	return &internalError{s}
+func newOverlayError(s string) *overlayError {
+	return &overlayError{s}
 }
 
 var (
 	// ErrResourceNotFound is the error returned by storages if a resource cannot be found.
-	ErrResourceNotFound = newInternalError("Not found")
+	ErrResourceNotFound = newOverlayError("Not found")
 
 	// ErrResourceAlreadyExists is the error returned by storages if a resource ID has been taken during a creation.
-	ErrResourceAlreadyExists = newInternalError("ID or name already exists")
+	ErrResourceAlreadyExists = newOverlayError("ID or name already exists")
 )
 
-// IsInternalError checks if a given error is an internal error rather than a storage error.
-// If it is an error which is issued from storage itself, returns false.
+// IsInternalError checks if a given error is an internal error which is generally a storage error.
 func IsInternalError(e error) bool {
-	if _, ok := e.(*internalError); ok {
+	if _, ok := e.(*overlayError); !ok {
 		return true
 	}
 	return false

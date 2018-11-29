@@ -109,7 +109,7 @@ func (in *Handler) Machine(w http.ResponseWriter, r *http.Request) {
 				err := in.storage.Get(newObj)
 				if err != nil {
 					in.logger.Error(err)
-					if genericStorage.IsInternalError(err) {
+					if !genericStorage.IsInternalError(err) {
 						in.finalizeStorageError(w, err)
 						return
 					}
@@ -147,7 +147,7 @@ func (in *Handler) Machine(w http.ResponseWriter, r *http.Request) {
 		err = in.storage.Create(cv)
 		if err != nil {
 			in.logger.Error(err)
-			if genericStorage.IsInternalError(err) {
+			if !genericStorage.IsInternalError(err) {
 				in.finalizeStorageError(w, err)
 				return
 			}
@@ -182,7 +182,7 @@ func (in *Handler) Machine(w http.ResponseWriter, r *http.Request) {
 		err = in.storage.Update(cv)
 		if err != nil {
 			in.logger.Error(err)
-			if genericStorage.IsInternalError(err) {
+			if !genericStorage.IsInternalError(err) {
 				in.finalizeStorageError(w, err)
 				return
 			}
@@ -207,7 +207,7 @@ func (in *Handler) Machine(w http.ResponseWriter, r *http.Request) {
 		err := in.storage.Delete(cv)
 		if err != nil {
 			in.logger.Error(err)
-			if genericStorage.IsInternalError(err) {
+			if !genericStorage.IsInternalError(err) {
 				in.finalizeStorageError(w, err)
 				return
 			}
@@ -261,7 +261,7 @@ func (in *Handler) MachineDigest(w http.ResponseWriter, r *http.Request) {
 		err := in.storage.Create(digest)
 		if err != nil {
 			in.logger.Error(err)
-			if genericStorage.IsInternalError(err) {
+			if !genericStorage.IsInternalError(err) {
 				in.finalizeStorageError(w, err)
 				return
 			}
@@ -294,7 +294,7 @@ func (in *Handler) MachineDigest(w http.ResponseWriter, r *http.Request) {
 			err := in.storage.Get(obj)
 			if err != nil {
 				in.logger.Error(err)
-				if genericStorage.IsInternalError(err) {
+				if !genericStorage.IsInternalError(err) {
 					in.finalizeStorageError(w, err)
 					return
 				}
@@ -361,7 +361,7 @@ func (in *Handler) MachineDigest(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		// if this is not specified, we consider that the user want to acquire a list of current machine info.
+		// If target is not specified, we consider that the user want to acquire a list of current machine info.
 		cv := genericStorage.NewMachineDigestList()
 		err = in.storage.List(cv)
 		if err != nil {
@@ -371,6 +371,10 @@ func (in *Handler) MachineDigest(w http.ResponseWriter, r *http.Request) {
 		}
 		sortor := genericStorage.NewSortor()
 		for i := range cv.Members {
+			// Query by date restricts on completed ones
+			if cv.Members[i].State != genericStorage.SuccessState {
+				continue
+			}
 			sortor.AppendMember(&cv.Members[i])
 		}
 		ordered := sortor.OrderByCreationTimestamp()
@@ -392,7 +396,7 @@ func (in *Handler) MachineDigest(w http.ResponseWriter, r *http.Request) {
 			err = in.storage.Get(newObj)
 			if err != nil {
 				in.logger.Error(err)
-				if genericStorage.IsInternalError(err) {
+				if !genericStorage.IsInternalError(err) {
 					in.finalizeStorageError(w, err)
 					return
 				}
@@ -423,6 +427,231 @@ func (in *Handler) MachineDigest(w http.ResponseWriter, r *http.Request) {
 		// TODO: support xlsx output
 	default:
 		in.finalizeError(w, fmt.Errorf("Invalid scope"), http.StatusBadRequest)
+	}
+}
+
+// DiscoveredMachines handles requests from /api/v1/discovered_machines
+// Usage:
+//   - GET /api/v1/discovered_machines retrieve a list of unassigned IP addresses (wrapped).
+//   - POST /api/v1/discovered_machines rescan immediately.
+func (in *Handler) DiscoveredMachines(w http.ResponseWriter, r *http.Request) {
+	defer in.logger.Sync()
+	defer func() {
+		if re := recover(); re != nil {
+			in.finalizeError(w, fmt.Errorf("Internal Server Error"), http.StatusInternalServerError)
+			in.logger.Error(re)
+		}
+	}()
+	defer in.finalizeHeader(w)
+
+	switch r.Method {
+	case "GET":
+		latest := genericStorage.NewDiscoveredMachines()
+		err := in.storage.Get(latest)
+		if err != nil {
+			in.logger.Error(err)
+			if !genericStorage.IsInternalError(err) {
+				in.finalizeStorageError(w, err)
+				return
+			}
+			in.finalizeError(w, fmt.Errorf("Database Failure"), http.StatusInternalServerError)
+			return
+		}
+		dAtA, err := json.Marshal(latest)
+		if err != nil {
+			panic(err)
+		}
+		in.finalizeJSON(w, bytes.NewReader(dAtA), http.StatusOK)
+	case "POST":
+		latest := genericStorage.NewDiscoveredMachines()
+		err := in.storage.Get(latest)
+		if err != nil {
+			in.logger.Error(err)
+			if !genericStorage.IsInternalError(err) {
+				in.finalizeStorageError(w, err)
+				return
+			}
+			in.finalizeError(w, fmt.Errorf("Database Failure"), http.StatusInternalServerError)
+			return
+		}
+		if latest.State == genericStorage.SuccessState || latest.State == genericStorage.FailureState {
+			latest.State = genericStorage.StartedState
+		} else {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		err = in.storage.Update(latest)
+		if err != nil {
+			in.logger.Error(err)
+			if !genericStorage.IsInternalError(err) {
+				in.finalizeStorageError(w, err)
+				return
+			}
+			in.finalizeError(w, fmt.Errorf("Database Failure"), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+// AutoDiscovery handles requests from /api/v1/auto_discovery
+// Usage:
+//   - GET /api/v1/auto_discovery?search=[*|SUBNET_LIST]
+//   - POST /api/v1/auto_discovery
+//   - PUT /api/v1/auto_discovery
+//   - DELETE /api/v1/auto_discovery?target=[SUBNET_NAME]
+func (in *Handler) AutoDiscovery(w http.ResponseWriter, r *http.Request) {
+	defer in.logger.Sync()
+	defer func() {
+		if re := recover(); re != nil {
+			in.finalizeError(w, fmt.Errorf("Internal Server Error"), http.StatusInternalServerError)
+			in.logger.Error(re)
+		}
+	}()
+	defer in.finalizeHeader(w)
+
+	switch r.Method {
+	case "GET":
+		targets := strings.Split(r.URL.Query().Get("search"), ",")
+		if len(targets) == 1 && targets[0] == "" {
+			in.finalizeError(w, fmt.Errorf("Target required"), http.StatusBadRequest)
+			in.logger.Errorf("No auto discovery target was specified during query")
+			return
+		}
+		in.logger.Debugf("Search auto discovery: %s", strings.Join(targets, ", "))
+		var all bool
+		for _, each := range targets {
+			if each == "*" {
+				all = true
+				break
+			}
+		}
+		sortor := genericStorage.NewSortor()
+		if all {
+			cv := genericStorage.NewAutoDiscoveryList()
+			err := in.storage.List(cv)
+			if err != nil {
+				in.finalizeError(w, fmt.Errorf("Database Failure"), http.StatusInternalServerError)
+				in.logger.Error(err)
+				return
+			}
+			for i := range cv.Members {
+				sortor.AppendMember(&cv.Members[i])
+			}
+		} else {
+			for _, each := range targets {
+				newObj := genericStorage.NewMachine()
+				newObj.Name = each
+				err := in.storage.Get(newObj)
+				if err != nil {
+					in.logger.Error(err)
+					if !genericStorage.IsInternalError(err) {
+						in.finalizeStorageError(w, err)
+						return
+					}
+					in.finalizeError(w, fmt.Errorf("Database Failure"), http.StatusInternalServerError)
+					return
+				}
+				sortor.AppendMember(newObj)
+			}
+		}
+		dAtA, err := json.Marshal(sortor.OrderByName())
+		if err != nil {
+			panic(err)
+		}
+		in.finalizeJSON(w, bytes.NewReader(dAtA))
+	case "POST":
+		var buf bytes.Buffer
+		_, err := io.Copy(&buf, r.Body)
+		if err != nil {
+			panic(err)
+		}
+		cv := genericStorage.NewAutoDiscovery()
+		err = json.Unmarshal(buf.Bytes(), cv)
+		if err != nil {
+			in.finalizeError(w, fmt.Errorf("Invalid Request Body"), http.StatusBadRequest)
+			in.logger.Error(err)
+			return
+		}
+		_, _, err = net.ParseCIDR(cv.CIDR)
+		if err != nil {
+			in.logger.Error(err)
+			in.finalizeError(w, err, http.StatusBadRequest)
+			return
+		}
+		err = in.storage.Create(cv)
+		if err != nil {
+			in.logger.Error(err)
+			if !genericStorage.IsInternalError(err) {
+				in.finalizeStorageError(w, err)
+				return
+			}
+			in.finalizeError(w, fmt.Errorf("Database Failure"), http.StatusInternalServerError)
+			return
+		}
+		dAtA, err := json.Marshal(cv)
+		if err != nil {
+			panic(err)
+		}
+		in.finalizeJSON(w, bytes.NewReader(dAtA), http.StatusCreated)
+	case "PUT":
+		var buf bytes.Buffer
+		_, err := io.Copy(&buf, r.Body)
+		if err != nil {
+			panic(err)
+		}
+		cv := genericStorage.NewAutoDiscovery()
+		err = json.Unmarshal(buf.Bytes(), cv)
+		if err != nil {
+			in.finalizeError(w, fmt.Errorf("Invalid Request Body"), http.StatusBadRequest)
+			in.logger.Error(err)
+			return
+		}
+		_, _, err = net.ParseCIDR(cv.CIDR)
+		if err != nil {
+			in.logger.Error(err)
+			in.finalizeError(w, err, http.StatusBadRequest)
+			return
+		}
+		err = in.storage.Update(cv)
+		if err != nil {
+			in.logger.Error(err)
+			if !genericStorage.IsInternalError(err) {
+				in.finalizeStorageError(w, err)
+				return
+			}
+			in.finalizeError(w, fmt.Errorf("Database Failure"), http.StatusInternalServerError)
+			return
+		}
+		dAtA, err := json.Marshal(cv)
+		if err != nil {
+			panic(err)
+		}
+		in.finalizeJSON(w, bytes.NewReader(dAtA))
+	case "DELETE":
+		target := r.URL.Query().Get("target")
+		if target == "" {
+			in.finalizeError(w, fmt.Errorf("Target required"), http.StatusBadRequest)
+			in.logger.Errorf("No machine target was specified")
+			return
+		}
+		cv := genericStorage.NewAutoDiscovery()
+		cv.Name = target
+		err := in.storage.Delete(cv)
+		if err != nil {
+			in.logger.Error(err)
+			if !genericStorage.IsInternalError(err) {
+				in.finalizeStorageError(w, err)
+				return
+			}
+			in.finalizeError(w, fmt.Errorf("Database Failure"), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
 }
 
@@ -641,6 +870,8 @@ func NewHandler(storage genericStorage.Storage, logger *zap.SugaredLogger, wwwro
 	apiRoot := root.PathPrefix(apis.APIv1).Subrouter()
 	apiRoot.HandleFunc(apis.MachineAPI, h.Machine)
 	apiRoot.HandleFunc(apis.MachineDigestAPI, h.MachineDigest)
+	apiRoot.HandleFunc(apis.DiscoveredMachinesAPI, h.DiscoveredMachines)
+	apiRoot.HandleFunc(apis.AutoDiscoveryAPI, h.AutoDiscovery)
 
 	root.PathPrefix("/").HandlerFunc(h.Frontend)
 	return h

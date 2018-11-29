@@ -21,4 +21,8 @@ const (
 	MachineAPI = "/machine"
 	// MachineDigestAPI is the entrypoint of machine digest API
 	MachineDigestAPI = "/machine_digest"
+	// DiscoveredMachinesAPI is the entrypoint of discovered machines API
+	DiscoveredMachinesAPI = "/discovered_machines"
+	// AutoDiscoveryAPI is the entrypoint of auto discovery API
+	AutoDiscoveryAPI = "/auto_discovery"
 )

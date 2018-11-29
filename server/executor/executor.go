@@ -29,6 +29,7 @@ import (
 
 	genericStorage "github.com/universonic/cmdb/shared/storage/generic"
 	intutil "github.com/universonic/cmdb/utils/integration"
+	netutil "github.com/universonic/cmdb/utils/net"
 	zap "go.uber.org/zap"
 )
 
@@ -36,13 +37,14 @@ const timeoutPollInterval = 500 * time.Millisecond
 
 // Executor is currently a direct worker of scheduler.
 type Executor struct {
-	timeout  int
-	closeCh  chan struct{}
-	clzSubCh []chan struct{}
-	lock     sync.RWMutex
-	observer chan *genericStorage.MachineDigest
-	logger   *zap.SugaredLogger
-	storage  genericStorage.Storage
+	timeout              int
+	closeCh              chan struct{}
+	clzSubCh             []chan struct{}
+	lock                 sync.RWMutex
+	digestObserver       chan *genericStorage.MachineDigest
+	discMachinesObserver chan *genericStorage.DiscoveredMachines
+	logger               *zap.SugaredLogger
+	storage              genericStorage.Storage
 }
 
 // Prepare initialize inner storage and logger for server
@@ -53,12 +55,47 @@ func (in *Executor) Prepare(storage genericStorage.Storage, logger *zap.SugaredL
 
 // Serve starts executor
 func (in *Executor) Serve() error {
+	defer in.logger.Sync()
 	defer func() {
 		for i := range in.clzSubCh {
 			close(in.clzSubCh[i])
 		}
 		in.clzSubCh = in.clzSubCh[:0]
 	}()
+
+	// Deprecate previous process
+	digests := genericStorage.NewMachineDigestList()
+	err := in.storage.List(digests)
+	if err != nil {
+		in.logger.Errorf("Failed to initialize executor due to: %v", err)
+		return err
+	}
+	for i := range digests.Members {
+		if digests.Members[i].State == genericStorage.InProgressState {
+			digest := &digests.Members[i]
+			digest.State = genericStorage.FailureState
+			err = in.storage.Update(digest)
+			if err != nil {
+				in.logger.Error(err)
+				return err
+			}
+		}
+	}
+	discoveredMachines := genericStorage.NewDiscoveredMachinesList()
+	err = in.storage.List(discoveredMachines)
+	if err != nil {
+		in.logger.Errorf("Failed to initialize executor due to: %v", err)
+		return err
+	}
+	if len(discoveredMachines.Members) == 0 {
+		discovered := genericStorage.NewDiscoveredMachines()
+		discovered.State = genericStorage.SuccessState
+		err = in.storage.Create(discovered)
+		if err != nil {
+			in.logger.Errorf("Failed to initialize discovered machines due to: %v", err)
+		}
+	}
+
 LOOP:
 	for {
 		select {
@@ -70,7 +107,7 @@ LOOP:
 			in.lock.Lock()
 			defer in.lock.Unlock()
 			break LOOP
-		case digest := <-in.observer:
+		case digest := <-in.digestObserver:
 			go in.collect(digest)
 		}
 	}
@@ -84,14 +121,94 @@ func (in *Executor) Subscribe() <-chan struct{} {
 	return subscription
 }
 
+// NotifyDiscoveredMachines should be called if there is a incoming discovered machines object
+// to be fulfilled.
+func (in *Executor) NotifyDiscoveredMachines(latest *genericStorage.DiscoveredMachines) {
+	in.discMachinesObserver <- latest
+}
+
 // NotifyDigest should be called if there is a incoming digest that need to be fulfilled.
 func (in *Executor) NotifyDigest(digest *genericStorage.MachineDigest) {
-	in.observer <- digest
+	in.digestObserver <- digest
 }
 
 // Stop shutdown the executor
 func (in *Executor) Stop() {
 	close(in.closeCh)
+}
+
+func (in *Executor) discover(latest *genericStorage.DiscoveredMachines) (err error) {
+	defer in.logger.Sync()
+	defer func() {
+		if r := recover(); r != nil {
+			in.logger.Errorf("An critical error has just occurred: %v", r)
+		}
+	}()
+
+	if latest.State != genericStorage.StartedState {
+		return
+	}
+	defer func() {
+		if err != nil {
+			latest.State = genericStorage.FailureState
+			in.logger.Errorf("Failed to discover new machines due to: %v", err)
+		} else {
+			in.logger.Infof("Successfully completed machine auto-discovery task")
+		}
+		in.storage.Update(latest)
+	}()
+
+	latest.State = genericStorage.InProgressState
+	latest.Unassigned = latest.Unassigned[:0]
+	err = in.storage.Update(latest)
+	if err != nil {
+		in.logger.Errorf("Could not update discovered machines due to: %v", err)
+		return
+	}
+	list := genericStorage.NewAutoDiscoveryList()
+	err = in.storage.List(list)
+	if err != nil {
+		in.logger.Errorf("Could not retrieve auto discovery entities: %v", err)
+		return
+	}
+	found := make(map[string]string)
+	for _, each := range list.Members {
+		scanned, err := netutil.ScanCIDR(each.CIDR, 22, 80, 443)
+		if err != nil {
+			in.logger.Warnf("Could not scan on CIDR '%s' due to: %v", err)
+			continue
+		}
+		for k, v := range scanned {
+			if v[22] && v[80] && v[443] {
+				found[k] = k
+			}
+		}
+	}
+
+	// Drop those existing machines
+	machines := genericStorage.NewMachineList()
+	err = in.storage.List(machines)
+	if err != nil {
+		in.logger.Errorf("Could not retrieve machines due to: %v", err)
+		return
+	}
+	for _, each := range machines.Members {
+		if _, ok := found[each.IPMIAddress]; ok {
+			delete(found, each.IPMIAddress)
+		}
+	}
+
+	for each := range found {
+		latest.Unassigned = append(latest.Unassigned, each)
+	}
+	latest.State = genericStorage.SuccessState
+	err = in.storage.Update(latest)
+	if err != nil {
+		in.logger.Errorf("Could not update discovered machines due to: %v", err)
+		return
+	}
+	in.logger.Infof("Successfully discovered %d new machine(s)", len(latest.Unassigned))
+	return
 }
 
 func (in *Executor) collect(digest *genericStorage.MachineDigest) (err error) {
@@ -103,19 +220,21 @@ func (in *Executor) collect(digest *genericStorage.MachineDigest) (err error) {
 	}()
 	defer func() {
 		if err != nil {
-			digest.State = "FAILED"
+			digest.State = genericStorage.FailureState
 			in.logger.Errorf("Failed to generate digest due to: %v", err)
+		} else {
+			in.logger.Infof("Successfully generated digest: %s", digest.GetGUID())
 		}
 		in.storage.Update(digest)
-		in.logger.Infof("Successfully generated digest: %s", digest.GetGUID())
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(in.timeout)*time.Second)
 	defer cancel()
 
 	var (
-		dataset []genericStorage.MachineSnapshot
-		abort   bool
+		dataset     []genericStorage.MachineSnapshot
+		abort       bool
+		sshz, ipmiz *intutil.Ansible
 	)
 	errChan := make(chan error, 1)
 	defer close(errChan)
@@ -128,14 +247,8 @@ func (in *Executor) collect(digest *genericStorage.MachineDigest) (err error) {
 				in.logger.Errorf("Unexpected error occured: %v", err)
 			}
 		}()
-		defer func() {
-			if err != nil {
-				digest.State = "FAILED"
-				in.storage.Update(digest)
-			}
-		}()
 
-		digest.State = "IN-PROGRESS"
+		digest.State = genericStorage.InProgressState
 		err = in.storage.Update(digest)
 		if err != nil {
 			errChan <- err
@@ -193,15 +306,14 @@ func (in *Executor) collect(digest *genericStorage.MachineDigest) (err error) {
 		go func() {
 			defer in.logger.Sync()
 			defer wg.Done()
-			sshz := intutil.NewAnsible("canonical", inventoryFile)
+			sshz = intutil.NewAnsible("canonical", inventoryFile)
 			e := sshz.Execute()
 			if abort {
 				return
 			}
 			if e != nil {
 				in.logger.Error(e)
-				in.logger.Debugf("Verbose stdout during executing ansible module '%s': %s", sshz.Module, sshz.Stdout)
-				in.logger.Debugf("Verbose stderr during executing ansible module '%s': %s", sshz.Module, sshz.Stderr)
+				in.logger.Debugf("Verbose during executing ansible module '%s': %s", sshz.Module, sshz.Output)
 				errs = append(errs, e)
 			}
 			ssh = sshz.Result
@@ -209,15 +321,14 @@ func (in *Executor) collect(digest *genericStorage.MachineDigest) (err error) {
 		go func() {
 			defer in.logger.Sync()
 			defer wg.Done()
-			ipmiz := intutil.NewAnsible("ipmi", inventoryFile)
+			ipmiz = intutil.NewAnsible("ipmi", inventoryFile)
 			e := ipmiz.Execute()
 			if abort {
 				return
 			}
 			if e != nil {
 				in.logger.Error(e)
-				in.logger.Debugf("Verbose stdout during executing ansible module '%s': %s", ipmiz.Module, ipmiz.Stdout)
-				in.logger.Debugf("Verbose stderr during executing ansible module '%s': %s", ipmiz.Module, ipmiz.Stderr)
+				in.logger.Debugf("Verbose during executing ansible module '%s': %s", sshz.Module, ipmiz.Output)
 				errs = append(errs, e)
 			}
 			ipmi = ipmiz.Result
@@ -267,16 +378,14 @@ func (in *Executor) collect(digest *genericStorage.MachineDigest) (err error) {
 		}
 		for name, each := range resultCV {
 			cv := NewAnsibleResultCarrier()
-			err = json.Unmarshal(each, &cv)
+			err = json.Unmarshal(each, cv)
 			if err != nil {
 				in.logger.Errorf("Could not parse merged result into result carrier due to: %v", err)
 				errChan <- err
 				return
 			}
 			result[name] = cv
-		}
 
-		for name, each := range result {
 			machine := genericStorage.NewMachine()
 			machine.SetName(name)
 			err = in.storage.Get(machine)
@@ -285,9 +394,10 @@ func (in *Executor) collect(digest *genericStorage.MachineDigest) (err error) {
 				errChan <- err
 				return
 			}
-			defer in.tryToSync(machine, result[name])
-			dataset = append(dataset, *ParseAnsibleResult(each, machine))
+			defer in.tryToSync(machine, cv)
+			dataset = append(dataset, *ParseAnsibleResult(cv, machine))
 		}
+		errChan <- nil
 	}()
 
 	ticker := time.NewTicker(timeoutPollInterval)
@@ -297,6 +407,8 @@ func (in *Executor) collect(digest *genericStorage.MachineDigest) (err error) {
 		select {
 		case <-ctx.Done():
 			abort = true
+			sshz.Kill()
+			ipmiz.Kill()
 			return ctx.Err()
 		case e := <-errChan:
 			if e != nil {
@@ -321,7 +433,7 @@ func (in *Executor) saveToDigest(snapshots []genericStorage.MachineSnapshot, dig
 		}
 		digest.Members = append(digest.Members, obj.ObjectMeta)
 	}
-	digest.State = "COMPLETED"
+	digest.State = genericStorage.SuccessState
 	return in.storage.Update(digest)
 }
 
@@ -406,9 +518,10 @@ func (in *Executor) tryToSync(machine *genericStorage.Machine, result *AnsibleRe
 // NewExecutor returns a new executor with given storage and logger.
 func NewExecutor(timeout int) *Executor {
 	return &Executor{
-		timeout:  timeout,
-		closeCh:  make(chan struct{}, 1),
-		observer: make(chan *genericStorage.MachineDigest, 1),
+		timeout:              timeout,
+		closeCh:              make(chan struct{}, 1),
+		digestObserver:       make(chan *genericStorage.MachineDigest, 1),
+		discMachinesObserver: make(chan *genericStorage.DiscoveredMachines, 1),
 	}
 }
 

@@ -55,7 +55,7 @@ var CreateMachineCmd = &cobra.Command{
 var GetMachineCmd = &cobra.Command{
 	Use:   "machine",
 	Short: "Overview machine configuration",
-	Long:  `Overview machine configuration. Possible to query multiple machines in one time.`,
+	Long:  `Overview machine configuration. Possible to query multiple machines at one time.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		var machines []string
 		if all {
@@ -214,7 +214,7 @@ func init() {
 	// Remove
 	RemoveCmd.AddCommand(RemoveMachineCmd)
 	RemoveMachineCmd.PersistentFlags().StringVarP(
-		&name, "name", "n", name, "The name of the machine to update.",
+		&name, "name", "n", name, "The name of the machine to remove.",
 	)
 	RemoveMachineCmd.PersistentFlags().BoolVarP(
 		&yes, "yes", "y", yes, "Disable confirm prompt on deletion.",

@@ -17,6 +17,7 @@ package integration
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -51,10 +52,11 @@ func newAnsibleError() *ansibleError {
 // Ansible is a port of ansible to run task for generic purpose.
 type Ansible struct {
 	fast          bool
+	term          bool
+	cmd           *exec.Cmd
 	Module        string
 	InventoryFile string
-	Stdout        []byte
-	Stderr        []byte
+	Output        []byte
 	Result        map[string][]byte
 }
 
@@ -65,28 +67,15 @@ func (in *Ansible) Execute() error {
 		panic(err)
 	}
 	defer os.RemoveAll(dir)
-	cmd := exec.Command("ansible", "all", "-m", in.Module, "-i", in.InventoryFile, "-t", dir, "-vvv")
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		panic(err)
-	}
-	defer stdout.Close()
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		panic(err)
-	}
-	defer stderr.Close()
-	err = cmd.Start()
-	if err != nil {
-		panic(err)
-	}
-	go func() {
-		in.Stdout, _ = ioutil.ReadAll(stdout)
+
+	in.cmd = exec.Command("ansible", "all", "-m", in.Module, "-i", in.InventoryFile, "-t", dir, "-vvv")
+	defer func() {
+		in.term = true
 	}()
-	go func() {
-		in.Stderr, _ = ioutil.ReadAll(stderr)
-	}()
-	err = cmd.Wait()
+	in.Output, err = in.cmd.CombinedOutput()
+	if in.term {
+		return ErrAnsibleTerminated
+	}
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
@@ -143,6 +132,17 @@ FINALIZE:
 	return nil
 }
 
+// Kill terminates the underlay command process immediately.
+func (in *Ansible) Kill() error {
+	if !in.term && in.cmd != nil && in.cmd.Process != nil {
+		defer func() {
+			in.term = true
+		}()
+		return in.cmd.Process.Kill()
+	}
+	return nil
+}
+
 // NewAnsible initiates a new ansible executor with given module name and inventory file. If fast mode
 // is enabled (disabled by default), will return immediately rather than collect result data and then
 // return with a qualified error.
@@ -176,3 +176,6 @@ func GetFailedNodesFromError(e error) (nodes []string) {
 	}
 	return
 }
+
+// ErrAnsibleTerminated represents an error when the ansible has been killed before it returns.
+var ErrAnsibleTerminated = errors.New("Terminated ansible process")

@@ -1,4 +1,4 @@
-// Copyright © 2018 Alfred Chou <unioverlord@gmail.com>
+// Copyright 2018 Alfred Chou <unioverlord@gmail.com>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,13 +20,18 @@ import (
 
 	clientv3 "github.com/coreos/etcd/clientv3"
 	generic "github.com/universonic/cmdb/shared/storage/generic"
+	zap "go.uber.org/zap"
 )
 
+// watcher is a low-level structure that wraps etcd watcher inside. Note that
+// you should prevent using the global watcher of the etcd client. And if so,
+// then you should never call Close unless the program is exiting.
 type watcher struct {
 	key     string
 	opts    []clientv3.OpOption
 	watcher clientv3.Watcher
 	outChan chan generic.WatchEvent
+	logger  *zap.SugaredLogger
 }
 
 func (in *watcher) Close() error {
@@ -38,46 +43,67 @@ func (in *watcher) Output() <-chan generic.WatchEvent {
 }
 
 func (in *watcher) watch() {
+	defer in.logger.Sync()
+	in.logger.Debug("Watcher started.")
+	in.logger.Sync()
+
 	ch := in.watcher.Watch(context.Background(), in.key, in.opts...)
-	defer close(in.outChan)
 	for resp := range ch {
 		if err := resp.Err(); err != nil {
 			in.outChan <- generic.WatchEvent{
 				Type:  generic.ERROR,
 				Value: []byte(err.Error()),
 			}
+			in.logger.Error(err)
 			return
 		}
+		if resp.IsProgressNotify() {
+			continue
+		}
 		for _, event := range resp.Events {
-			var t generic.WatchEventType
-			if event.Type == clientv3.EventTypePut {
+			var ev generic.WatchEvent
+			switch event.Type {
+			case clientv3.EventTypePut:
+				var t generic.WatchEventType
 				if event.Kv.CreateRevision == event.Kv.ModRevision {
-					t |= generic.CREATE
+					t = generic.CREATE
 				} else {
-					t |= generic.UPDATE
+					t = generic.UPDATE
 				}
+				k := string(event.Kv.Key)
+				ev = generic.WatchEvent{
+					Type:  t,
+					Kind:  filepath.Base(filepath.Dir(k)),
+					Key:   filepath.Base(k),
+					Value: event.Kv.Value,
+				}
+			case clientv3.EventTypeDelete:
+				k := string(event.PrevKv.Key)
+				ev = generic.WatchEvent{
+					Type:  generic.DELETE,
+					Kind:  filepath.Base(filepath.Dir(k)),
+					Key:   filepath.Base(k),
+					Value: event.PrevKv.Value,
+				}
+			default:
+				continue
 			}
-			if event.Type == clientv3.EventTypeDelete {
-				t |= generic.DELETE
-			}
-			k := string(event.Kv.Key)
-			ev := generic.WatchEvent{
-				Type:  t,
-				Kind:  filepath.Base(filepath.Dir(k)),
-				Key:   filepath.Base(k),
-				Value: event.Kv.Value,
-			}
+
 			in.outChan <- ev
+			in.logger.Debugw("Sent event =>", "event", ev)
+			in.logger.Sync()
 		}
 	}
+	in.logger.Debug("Watcher exited.")
 }
 
-func newWatcherFrom(w clientv3.Watcher, key string, opts ...clientv3.OpOption) generic.Watcher {
+func newWatcherFrom(w clientv3.Watcher, key string, logger *zap.SugaredLogger, opts ...clientv3.OpOption) generic.Watcher {
 	t := &watcher{
 		key:     key,
 		opts:    opts,
 		watcher: w,
 		outChan: make(chan generic.WatchEvent, generic.DefaultWatchChanSize),
+		logger:  logger,
 	}
 	go t.watch()
 	return t

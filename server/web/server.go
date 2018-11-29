@@ -38,7 +38,6 @@ const (
 type Server struct {
 	closeWG  sync.WaitGroup
 	closeCh  chan struct{}
-	clzSubCh []chan struct{}
 	grace    time.Duration
 	unixAddr string
 	tcpAddr  string
@@ -54,21 +53,8 @@ func (in *Server) Prepare(storage genericStorage.Storage, logger *zap.SugaredLog
 	in.tcpSrv.Handler = router
 }
 
-// Subscribe attach an external channel to be used for callback function when server exited.
-func (in *Server) Subscribe() <-chan struct{} {
-	subscription := make(chan struct{}, 1)
-	in.clzSubCh = append(in.clzSubCh, subscription)
-	return subscription
-}
-
 // Serve listen and serve on desired address, and returns gracefully if Stop was called.
 func (in *Server) Serve() error {
-	defer func() {
-		for i := range in.clzSubCh {
-			close(in.clzSubCh[i])
-		}
-		in.clzSubCh = in.clzSubCh[:0]
-	}()
 	unixListener, err := net.Listen("unix", in.unixAddr)
 	if err != nil {
 		return err
@@ -81,16 +67,26 @@ func (in *Server) Serve() error {
 	go in.serveTCP(tcpListener)
 	<-in.closeCh
 
-	in.closeWG.Add(2)
-	go in.stopUnix()
-	go in.stopTCP()
-	in.closeWG.Wait()
+	errChan := make(chan error, 1)
+	defer close(errChan)
+	go func() {
+		errChan <- in.stopUnix()
+	}()
+	go func() {
+		errChan <- in.stopTCP()
+	}()
+	var err error
+	for i := 0; i < 2; i++ {
+		err = multierror.Append(err, <-errChan)
+	}
 	return nil
 }
 
 // Stop shutdown the server gracefully.
 func (in *Server) Stop() {
+	in.closeWG.Add(1)
 	close(in.closeCh)
+	in.closeWG.Wait()
 }
 
 func (in *Server) serveUnix(listener net.Listener) error {

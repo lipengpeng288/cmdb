@@ -378,6 +378,167 @@ func (in *Client) parseMachineFromYAML(filename string) (*genericStorage.Machine
 	return cv, nil
 }
 
+func (in *Client) CreateAutoDiscovery(name, cidr string) (err error) {
+	cv := genericStorage.NewAutoDiscovery()
+	cv.SetName(name)
+	cv.CIDR = cidr
+	dAtA, err := json.Marshal(cv)
+	if err != nil {
+		return err
+	}
+	resp, err := in.Post(apis.AutoDiscoveryAPI, jsonContentType, bytes.NewReader(dAtA))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	dAtA, err = ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("%s", dAtA)
+	}
+	err = json.Unmarshal(dAtA, cv)
+	if err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	WriteASCIITable(&buf, cv.Header(), cv.Row())
+	fmt.Fprintf(os.Stdout, "%s\n", buf.Bytes())
+	return nil
+}
+
+func (in *Client) UpdateAutoDiscovery(name, cidr string) (err error) {
+	cv := genericStorage.NewAutoDiscovery()
+	cv.SetName(name)
+	cv.CIDR = cidr
+	dAtA, err := json.Marshal(cv)
+	if err != nil {
+		return err
+	}
+	resp, err := in.Put(apis.AutoDiscoveryAPI, jsonContentType, bytes.NewReader(dAtA))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	dAtA, err = ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("%s", dAtA)
+	}
+	err = json.Unmarshal(dAtA, cv)
+	if err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	WriteASCIITable(&buf, cv.Header(), cv.Row())
+	fmt.Fprintf(os.Stdout, "%s\n", buf.Bytes())
+	return nil
+}
+
+func (in *Client) UpdateDiscoveredMachines() (err error) {
+	resp, err := in.Post(apis.DiscoveredMachinesAPI, "plain/text", bytes.NewReader([]byte{}))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		dAtA, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("%s", dAtA)
+	}
+	fmt.Fprintf(os.Stderr, "Now we are refreshing the discovered machines list. You can wait for a while to check it later.\n")
+	return nil
+}
+
+func (in *Client) GetDiscovertedMachines() (err error) {
+	resp, err := in.Get(apis.DiscoveredMachinesAPI)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	dAtA, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("%s", dAtA)
+	}
+	cv := genericStorage.NewDiscoveredMachines()
+	err = json.Unmarshal(dAtA, cv)
+	if err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	WriteASCIITable(&buf, cv.Header(), cv.Row())
+	fmt.Fprintf(os.Stdout, "%s\n", buf.Bytes())
+	return nil
+}
+
+func (in *Client) GetAutoDiscovery(name []string) (err error) {
+	var suffix string
+	if len(name) == 0 {
+		suffix = "*"
+	} else {
+		suffix = strings.Join(name, ",")
+	}
+	resp, err := in.Get(apis.AutoDiscoveryAPI + "?search=" + suffix)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	dAtA, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("%s", dAtA)
+	}
+	ex := genericStorage.NewAutoDiscovery()
+	cv := genericStorage.NewAutoDiscoveryList()
+	err = json.Unmarshal(dAtA, &cv.Members)
+	if err != nil {
+		return err
+	}
+	var (
+		buf  bytes.Buffer
+		rows [][]string
+	)
+	for _, each := range cv.Members {
+		rows = append(rows, each.Row())
+	}
+	WriteASCIITable(&buf, ex.Header(), rows...)
+	fmt.Fprintf(os.Stdout, "%s\n", buf.Bytes())
+	return nil
+}
+
+func (in *Client) RemoveAutoDiscovery(name string, yes bool) error {
+	if !yes {
+		prompt := cliutil.NewComfirmPrompt(os.Stderr, os.Stdin)
+		if !prompt.Enforce() {
+			return fmt.Errorf("User Abort")
+		}
+	}
+	resp, err := in.Delete(apis.AutoDiscoveryAPI + "?target=" + name)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		dAtA, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("%s", dAtA)
+	}
+	fmt.Fprintf(os.Stderr, "Done.\n")
+	return nil
+}
+
 // Post implements a generic POSTer
 func (in *Client) Post(path, contentType string, body io.Reader) (*http.Response, error) {
 	return in.request("POST", path, contentType, body)

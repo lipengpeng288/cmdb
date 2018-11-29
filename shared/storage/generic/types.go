@@ -18,7 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
-	"time"
+	"strings"
 )
 
 const (
@@ -28,126 +28,47 @@ const (
 	RESOURCE_MACHINE_SNAPSHOT = "machine_snapshot"
 	// RESOURCE_MACHINE_DIGEST indicates the kind of a MachineDigest
 	RESOURCE_MACHINE_DIGEST = "machine_digest"
+	// RESOURCE_AUTO_DISCOVERY indicates the kind of an AutoDiscovery
+	RESOURCE_AUTO_DISCOVERY = "auto_discovery"
+	// RESOURCE_DISCOVERED_MACHINES indicates the kind of a DiscoveredMachines
+	RESOURCE_DISCOVERED_MACHINES = "discovered_machines"
 )
 
-// ObjectMeta is the metadata of objects
-type ObjectMeta struct {
-	// GUID as a unified identifier for the object
-	GUID string `json:"guid,omitempty" protobuf:"bytes,1,req,name=guid"`
-	// Kind represents the resource name of the object
-	Kind string `json:"kind,omitempty" protobuf:"bytes,2,req,name=kind"`
-	// Name is the name of the object
-	Name string `json:"name,omitempty" protobuf:"bytes,3,req,name=name"`
-	// Namespace is the name of the object. Generally it is the name of its owner.
-	Namespace string `json:"namespace,omitempty" protobuf:"bytes,4,name=namespace"`
-	// CreatedAt indicates the creation timestamp
-	CreatedAt Time `json:"created_at,omitempty" protobuf:"bytes,5,req,name=created_at"`
-	// UpdatedAt indicates the updating timestamp
-	UpdatedAt *Time `json:"updated_at,omitempty" protobuf:"bytes,6,opt,name=updated_at"`
-	// Deleting indicates that the object is being deleted.
-	Deleting bool `json:"deleting,omitempty" protobuf:"varint,7,opt,name=deleting"`
-}
+// State is the generic execution state
+type State int
 
-// SetGUID set the GUID for an object
-func (in *ObjectMeta) SetGUID(id string) {
-	in.GUID = id
-}
-
-// GetGUID returns the GUID of an object
-func (in *ObjectMeta) GetGUID() string {
-	return in.GUID
-}
-
-// SetKind set the Kind for an object
-func (in *ObjectMeta) SetKind(kind string) {
-	in.Kind = kind
-}
-
-// GetKind returns the Kind of an object
-func (in *ObjectMeta) GetKind() string {
-	return in.Kind
-}
-
-// SetName set the Name for an object
-func (in *ObjectMeta) SetName(name string) {
-	in.Name = name
-}
-
-// GetName returns the Name of an object
-func (in *ObjectMeta) GetName() string {
-	return in.Name
-}
-
-// SetNamespace set the Namespace for an object
-func (in *ObjectMeta) SetNamespace(ns string) {
-	in.Namespace = ns
-}
-
-// GetNamespace returns the Namespace of an object
-func (in *ObjectMeta) GetNamespace() string {
-	return in.Namespace
-}
-
-// SetCreationTimestamp set the CreatedAt for an object
-func (in *ObjectMeta) SetCreationTimestamp(timestamp time.Time) {
-	in.CreatedAt = Time{timestamp}
-}
-
-// GetCreationTimestamp returns the creation timestamp of an object
-func (in *ObjectMeta) GetCreationTimestamp() time.Time {
-	return in.CreatedAt.Time
-}
-
-// SetUpdatingTimestamp set the UpdatedAt for an object
-func (in *ObjectMeta) SetUpdatingTimestamp(timestamp time.Time) {
-	in.UpdatedAt = &Time{timestamp}
-}
-
-// GetUpdatingTimestamp returns the updating timestamp of an object
-func (in *ObjectMeta) GetUpdatingTimestamp() *time.Time {
-	if in.UpdatedAt == nil {
-		return nil
+func (of State) String() string {
+	switch of {
+	case UnknownState:
+		return "<null>"
+	case StartedState:
+		return "STARTED"
+	case AbortState:
+		return "ABORT"
+	case InProgressState:
+		return "IN-PROGRESS"
+	case SuccessState:
+		return "COMPLETED"
+	case FailureState:
+		return "FAILED"
 	}
-	return &in.UpdatedAt.Time
+	return "<invalid>"
 }
 
-// IsDeleting indicates whether the object is being deleted
-func (in *ObjectMeta) IsDeleting() bool {
-	return in.Deleting
-}
-
-// HasNamespace returns true if object is namespace-sensitive. This could be overriden
-// within specific object.
-func (in *ObjectMeta) HasNamespace() bool { return false }
-
-// ObjectListMeta is the metadata of object list
-type ObjectListMeta struct {
-	// Kind represents the resource name of the object
-	Kind string `json:"kind,omitempty"`
-	// Isolated represents it is a list of object with namespace
-	Isolated bool `json:"isolated,omitempty"`
-}
-
-// GetKind returns the Kind of an object list
-func (in *ObjectListMeta) GetKind() string {
-	return in.Kind
-}
-
-// HasNamespace returns true if it has namespace
-func (in *ObjectListMeta) HasNamespace() bool {
-	return in.Isolated
-}
-
-// Time is a wrapper around time.Time which supports correct
-// marshaling to YAML and JSON.  Wrappers are provided for many
-// of the factory methods that the time package offers.
-//
-// +protobuf.options.marshal=false
-// +protobuf.as=Timestamp
-// +protobuf.options.(gogoproto.goproto_stringer)=false
-type Time struct {
-	time.Time `protobuf:"-"`
-}
+const (
+	// UnknownState indicates an unset state. This should not be presented in common cases.
+	UnknownState State = iota
+	// StartedState indicates an initiated state.
+	StartedState
+	// AbortState indicates an abort state.
+	AbortState
+	// InProgressState indicates that a job is executing in progress.
+	InProgressState
+	// SuccessState indicates that a job has finished and succeeded.
+	SuccessState
+	// FailureState indicates that a job has finished and failed.
+	FailureState
+)
 
 // Machine indicates machine data object
 type Machine struct {
@@ -414,7 +335,8 @@ func NewMachineSnapshotList() *MachineSnapshotList {
 type MachineDigest struct {
 	ObjectMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
 
-	State   string       `json:"state,omitempty" protobuf:"bytes,2,opt,name=state"`
+	// TODO: State should be replaced with more canonical value. Replace its type with `State`.
+	State   State        `json:"state,omitempty" protobuf:"bytes,2,opt,name=state"`
 	Members []ObjectMeta `json:"members,omitempty" protobuf:"bytes,3,rep,name=members"`
 }
 
@@ -427,7 +349,7 @@ func (in *MachineDigest) Header() []string {
 func (in *MachineDigest) Row() []string {
 	row := []string{
 		in.GetGUID(),
-		in.State,
+		in.State.String(),
 		fmt.Sprintf("%d", len(in.Members)),
 		in.GetCreationTimestamp().String(),
 	}
@@ -447,7 +369,8 @@ func NewMachineDigest() *MachineDigest {
 // MachineDigestList indicates list of MachineDigest
 type MachineDigestList struct {
 	ObjectListMeta `json:",inline"`
-	Members        []MachineDigest `json:"members,omitempty"`
+
+	Members []MachineDigest `json:"members,omitempty"`
 }
 
 // AppendRaw appends raw format data to object list, and returns any encountered error.
@@ -469,31 +392,126 @@ func NewMachineDigestList() *MachineDigestList {
 	}
 }
 
-type HealthCheck struct {
+// AutoDiscovery defines a auto-discovery zone for discovering new machines automatically. New
+// machine's IP address will be stored into DiscoveredMachines.
+type AutoDiscovery struct {
 	ObjectMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
 
-	CIDR HealthCheckCIDR `json:"cidr,omitempty" protobuf:"bytes,2,opt,name=cidr"`
+	CIDR string `json:"cidr,omitempty" protobuf:"bytes,2,opt,name=cidr"`
 }
 
-type HealthCheckCIDR struct {
-	IP   string `json:"ip,omitempty" protobuf:"bytes,1,opt,name=ip"`
-	Mask string `json:"mask,omitempty" protobuf:"bytes,2,opt,name=mask"`
+// Header returns a set of headers that will be used for generating ASCII table.
+func (in *AutoDiscovery) Header() []string {
+	return []string{"GUID", "Name", "CIDR", "Created At", "Updated At"}
 }
 
-type Healthz struct {
+// Row returns the value of object as a row of ASCII table.
+func (in *AutoDiscovery) Row() []string {
+	row := []string{
+		in.GetGUID(),
+		in.GetName(),
+		in.CIDR,
+		in.GetCreationTimestamp().String(),
+	}
+	if in.GetUpdatingTimestamp() != nil && !in.GetUpdatingTimestamp().IsZero() {
+		return append(row, in.UpdatedAt.String())
+	}
+	return append(row, "")
+}
+
+// NewAutoDiscovery generates a new empty AutoDiscovery instance
+func NewAutoDiscovery() *AutoDiscovery {
+	return &AutoDiscovery{
+		ObjectMeta: ObjectMeta{Kind: RESOURCE_AUTO_DISCOVERY},
+	}
+}
+
+// AutoDiscoveryList indicates list of AutoDiscovery
+type AutoDiscoveryList struct {
+	ObjectListMeta `json:",inline"`
+
+	Members []AutoDiscovery `json:"members,omitempty"`
+}
+
+// AppendRaw appends raw format data to object list, and returns any encountered error.
+func (in *AutoDiscoveryList) AppendRaw(dAtA []byte) error {
+	cv := NewAutoDiscovery()
+	if err := json.Unmarshal(dAtA, cv); err != nil {
+		return err
+	}
+	in.Members = append(in.Members, *cv)
+	return nil
+}
+
+// NewAutoDiscoveryList generates a new empty AutoDiscoveryList instance
+func NewAutoDiscoveryList() *AutoDiscoveryList {
+	return &AutoDiscoveryList{
+		ObjectListMeta: ObjectListMeta{
+			Kind: RESOURCE_AUTO_DISCOVERY,
+		},
+	}
+}
+
+// DiscoveredMachines is a fixed object to store those newly-found machines. Its key will always
+// be `/discovered_machines/latest`.
+type DiscoveredMachines struct {
 	ObjectMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
 
-	Existing []HealthzExistingMachine `json:"existing,omitempty" protobuf:"bytes,2,rep,name=existing"`
-	Found    []HealthzUnknownMachine  `json:"found,omitempty" protobuf:"bytes,3,rep,name=found"`
+	State      State    `json:"state,omitempty" protobuf:"bytes,2,opt,name=state"`
+	Unassigned []string `json:"unassigned,omitempty" protobuf:"bytes,3,rep,name=unassigned"`
 }
 
-type HealthzExistingMachine struct {
-	Name string `json:"name,omitempty" protobuf:"bytes,1,opt,name=name"`
-	IP   string `json:"ip,omitempty" protobuf:"bytes,2,opt,name=ip"`
-	OK   bool   `json:"ok,omitempty" protobuf:"varint,3,opt,name=ok"`
+// Header returns a set of headers that will be used for generating ASCII table.
+func (in *DiscoveredMachines) Header() []string {
+	return []string{"State", "Discovered IP", "Created At", "Updated At"}
 }
 
-type HealthzUnknownMachine struct {
-	IP    string `json:"ip,omitempty" protobuf:"bytes,1,opt,name=ip"`
-	Ports []int  `json:"ports,omitempty" protobuf:"bytes,2,rep,name=ports"`
+// Row returns the value of object as a row of ASCII table.
+func (in *DiscoveredMachines) Row() []string {
+	row := []string{
+		in.State.String(),
+		strings.Join(in.Unassigned, ", "),
+		in.GetCreationTimestamp().String(),
+	}
+	if in.GetUpdatingTimestamp() != nil && !in.GetUpdatingTimestamp().IsZero() {
+		return append(row, in.UpdatedAt.String())
+	}
+	return append(row, "")
+}
+
+// NewDiscoveredMachines generates a new empty DiscoveredMachines instance
+func NewDiscoveredMachines() *DiscoveredMachines {
+	return &DiscoveredMachines{
+		ObjectMeta: ObjectMeta{
+			Kind: RESOURCE_DISCOVERED_MACHINES,
+			Name: "latest",
+		},
+	}
+}
+
+// DiscoveredMachinesList indicates list of DiscoveredMachines.
+// This is meaningless in common usage, but for backward compability.
+type DiscoveredMachinesList struct {
+	ObjectListMeta `json:",inline"`
+
+	Members []DiscoveredMachines `json:"members,omitempty"`
+}
+
+// AppendRaw appends raw format data to object list, and returns any encountered error.
+func (in *DiscoveredMachinesList) AppendRaw(dAtA []byte) error {
+	cv := NewDiscoveredMachines()
+	if err := json.Unmarshal(dAtA, cv); err != nil {
+		return err
+	}
+	in.Members = append(in.Members, *cv)
+	return nil
+}
+
+// NewDiscoveredMachinesList generates a new empty DiscoveredMachinesList instance
+func NewDiscoveredMachinesList() *DiscoveredMachinesList {
+	return &DiscoveredMachinesList{
+		ObjectListMeta: ObjectListMeta{
+			Kind: RESOURCE_DISCOVERED_MACHINES,
+		},
+	}
 }
